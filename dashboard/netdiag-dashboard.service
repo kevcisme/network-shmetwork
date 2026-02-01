@@ -1,0 +1,17 @@
+[Unit]
+Description=Network Diagnostics Dashboard (Next.js)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/netdiag/dashboard
+Environment=NODE_ENV=production
+Environment=LOG_DIR=/var/log/netdiag
+Environment=PORT=3000
+ExecStart=/usr/bin/npm run start
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
