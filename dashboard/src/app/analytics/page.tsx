@@ -23,6 +23,8 @@ import {
   ChartLegendContent,
 } from "@/components/ui/chart";
 import { AlertCircle, Lightbulb, TrendingUp } from "lucide-react";
+import { BandUsageChart } from "@/components/band-usage-chart";
+import { MeshHealthScore } from "@/components/mesh-health-score";
 import type { AnalyticsData, HostHistory } from "@/lib/log-parser";
 
 const chartColors = [
@@ -344,6 +346,12 @@ export default function AnalyticsPage() {
           <Heatmap patterns={analytics.hourlyPatterns} />
         </CardContent>
       </Card>
+
+      {/* Mesh Health & Band Usage */}
+      <div className="grid gap-4 md:grid-cols-2">
+        <MeshHealthScore />
+        <BandUsageChart />
+      </div>
 
       {/* Incidents & Recommendations */}
       <div className="grid gap-4 md:grid-cols-2">

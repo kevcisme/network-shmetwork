@@ -10,6 +10,8 @@ Usage:
   python3 analyze.py ap-stats         # AP connection statistics
   python3 analyze.py roaming          # Analyze roaming events and patterns
   python3 analyze.py visibility       # Show AP visibility from each location
+  python3 analyze.py sticky           # Detect sticky client behavior
+  python3 analyze.py band-usage       # Show 2.4GHz vs 5GHz usage patterns
 
 Run from the central collector where logs are aggregated.
 """
@@ -493,6 +495,264 @@ def cmd_visibility():
         print()
 
 
+def cmd_sticky():
+    """Detect sticky client behavior - when probes stay on weaker APs."""
+    print("=== Sticky Client Detection ===\n")
+    print("Analyzes when probes are connected to a weaker AP while")
+    print("a stronger AP is visible - indicates poor roaming behavior.\n")
+    
+    # Read both wifi probe and AP scan logs
+    wifi_logs = read_csv_logs("wifi_probe.csv")
+    scan_logs = read_csv_logs("ap_scan.csv")
+    
+    if not wifi_logs:
+        print("No WiFi probe logs found.")
+        return
+    
+    if not scan_logs:
+        print("No AP scan logs found. Run ap_scan.sh to enable sticky detection.")
+        return
+    
+    hosts = find_all_hosts()
+    
+    for h in hosts:
+        host_wifi = [w for w in wifi_logs if w.get("_host") == h]
+        host_scans = [s for s in scan_logs if s.get("_host") == h]
+        
+        if not host_wifi or not host_scans:
+            continue
+        
+        print(f"--- {h} ---")
+        
+        # Group scans by timestamp (nearest minute) for correlation
+        scan_by_time = defaultdict(list)
+        for s in host_scans:
+            ts = s.get("ts", "")[:16]  # Truncate to minute
+            scan_by_time[ts].append(s)
+        
+        # Analyze each wifi probe measurement
+        sticky_events = []
+        total_samples = 0
+        stuck_on_24ghz = 0
+        
+        for w in host_wifi:
+            wifi_ts = w.get("ts", "")[:16]
+            connected_ap = w.get("ap_name") or w.get("bssid")
+            connected_signal = int(w.get("signal_dbm") or -100)
+            connected_band = w.get("band", "")
+            
+            if not connected_ap:
+                continue
+            
+            total_samples += 1
+            
+            # Find corresponding scan (within 5 minutes)
+            nearby_scans = []
+            for ts_key, scans in scan_by_time.items():
+                try:
+                    wifi_dt = datetime.fromisoformat(w.get("ts", "").replace("Z", "+00:00"))
+                    scan_dt = datetime.fromisoformat(ts_key + ":00")
+                    if abs((wifi_dt - scan_dt).total_seconds()) < 300:
+                        nearby_scans.extend(scans)
+                except (ValueError, TypeError):
+                    continue
+            
+            if not nearby_scans:
+                continue
+            
+            # Find strongest AP from our network (same SSID)
+            connected_ssid = w.get("ssid", "")
+            best_signal = connected_signal
+            best_ap = connected_ap
+            
+            for scan in nearby_scans:
+                scan_ssid = scan.get("ssid", "")
+                scan_signal = int(scan.get("signal_dbm") or -100)
+                scan_ap = scan.get("ap_name") or scan.get("bssid")
+                
+                # Only compare APs from same network
+                if scan_ssid == connected_ssid and scan_signal > best_signal:
+                    best_signal = scan_signal
+                    best_ap = scan_ap
+            
+            # Detect sticky behavior (> 6 dB difference)
+            signal_diff = best_signal - connected_signal
+            if signal_diff > 6 and best_ap != connected_ap:
+                sticky_events.append({
+                    "ts": w.get("ts"),
+                    "connected_to": connected_ap,
+                    "connected_signal": connected_signal,
+                    "better_ap": best_ap,
+                    "better_signal": best_signal,
+                    "diff": signal_diff
+                })
+            
+            # Track 2.4GHz usage when 5GHz might be available
+            if connected_band == "2.4GHz":
+                # Check if 5GHz AP is visible with decent signal
+                has_5ghz = any(
+                    scan.get("ssid") == connected_ssid and
+                    int(scan.get("freq_mhz") or 0) > 5000 and
+                    int(scan.get("signal_dbm") or -100) > -70
+                    for scan in nearby_scans
+                )
+                if has_5ghz:
+                    stuck_on_24ghz += 1
+        
+        # Report findings
+        if total_samples == 0:
+            print("  No samples to analyze.")
+            print()
+            continue
+        
+        sticky_pct = len(sticky_events) / total_samples * 100 if total_samples else 0
+        stuck_24_pct = stuck_on_24ghz / total_samples * 100 if total_samples else 0
+        
+        print(f"  Total samples: {total_samples}")
+        print(f"  Sticky events: {len(sticky_events)} ({sticky_pct:.1f}%)")
+        print(f"  Stuck on 2.4GHz (5GHz available): {stuck_on_24ghz} ({stuck_24_pct:.1f}%)")
+        
+        # Calculate sticky score (0-100, lower is better)
+        sticky_score = min(100, sticky_pct * 2 + stuck_24_pct)
+        if sticky_score < 10:
+            rating = "Excellent (good roaming)"
+        elif sticky_score < 30:
+            rating = "Good"
+        elif sticky_score < 50:
+            rating = "Fair (some sticky behavior)"
+        else:
+            rating = "Poor (significant sticky client issues)"
+        
+        print(f"\n  Sticky Score: {sticky_score:.0f}/100 - {rating}")
+        
+        # Show recent sticky events
+        if sticky_events:
+            print("\n  Recent sticky events:")
+            for e in sticky_events[-5:]:
+                try:
+                    dt = datetime.fromisoformat(e["ts"].replace("Z", "+00:00"))
+                    ts_fmt = dt.strftime("%m-%d %H:%M")
+                except:
+                    ts_fmt = e["ts"][:16]
+                print(f"    {ts_fmt}: On {e['connected_to']} ({e['connected_signal']} dBm)")
+                print(f"              Better: {e['better_ap']} ({e['better_signal']} dBm, +{e['diff']} dB)")
+        
+        # Recommendations
+        if sticky_score >= 30:
+            print("\n  Recommendations:")
+            if stuck_24_pct > 20:
+                print("    - Enable band steering on your mesh router")
+                print("    - Check if 5GHz is disabled on this device")
+            if sticky_pct > 20:
+                print("    - Lower roaming RSSI threshold in mesh settings")
+                print("    - Enable 802.11k/v/r if supported by your mesh")
+                print("    - Consider reducing AP transmit power to force roaming")
+        
+        print()
+
+
+def cmd_band_usage():
+    """Analyze 2.4GHz vs 5GHz band usage patterns."""
+    print("=== Band Usage Analysis ===\n")
+    print("Shows how often each probe uses 2.4GHz vs 5GHz bands.\n")
+    
+    wifi_logs = read_csv_logs("wifi_probe.csv")
+    if not wifi_logs:
+        print("No WiFi probe logs found.")
+        print("Note: Band tracking requires the updated wifi_probe.sh with freq_mhz field.")
+        return
+    
+    # Check if we have band data
+    has_band_data = any(r.get("band") or r.get("freq_mhz") for r in wifi_logs)
+    if not has_band_data:
+        print("No band/frequency data in logs.")
+        print("Update wifi_probe.sh to include freq_mhz and band fields.")
+        return
+    
+    hosts = find_all_hosts()
+    
+    for h in hosts:
+        host_logs = [r for r in wifi_logs if r.get("_host") == h]
+        if not host_logs:
+            continue
+        
+        print(f"--- {h} ---")
+        
+        # Count band usage
+        band_counts = defaultdict(int)
+        band_signals = defaultdict(list)
+        band_throughput = defaultdict(list)
+        hourly_band = defaultdict(lambda: defaultdict(int))
+        
+        for r in host_logs:
+            band = r.get("band", "")
+            freq = r.get("freq_mhz", "")
+            
+            # Infer band from frequency if not explicitly set
+            if not band and freq:
+                freq_int = int(freq)
+                if freq_int < 3000:
+                    band = "2.4GHz"
+                elif freq_int < 6000:
+                    band = "5GHz"
+                else:
+                    band = "6GHz"
+            
+            if not band:
+                continue
+            
+            band_counts[band] += 1
+            
+            # Track signal by band
+            signal = r.get("signal_dbm")
+            if signal:
+                band_signals[band].append(int(signal))
+            
+            # Track by hour
+            try:
+                dt = datetime.fromisoformat(r.get("ts", "").replace("Z", "+00:00"))
+                hourly_band[dt.hour][band] += 1
+            except:
+                pass
+        
+        total = sum(band_counts.values())
+        if total == 0:
+            print("  No band data available.")
+            print()
+            continue
+        
+        # Overall band distribution
+        print("  Band Distribution:")
+        for band in ["2.4GHz", "5GHz", "6GHz"]:
+            count = band_counts.get(band, 0)
+            pct = count / total * 100 if total else 0
+            if count > 0:
+                avg_signal = sum(band_signals[band]) / len(band_signals[band]) if band_signals[band] else 0
+                print(f"    {band}: {count} samples ({pct:.1f}%) - avg signal {avg_signal:.0f} dBm")
+        
+        # Identify problematic patterns
+        pct_24ghz = band_counts.get("2.4GHz", 0) / total * 100 if total else 0
+        
+        if pct_24ghz > 50:
+            print(f"\n  ⚠️  Warning: {pct_24ghz:.0f}% of connections on 2.4GHz")
+            print("     5GHz is typically faster and less congested.")
+            print("     Check: band steering, device 5GHz support, AP placement")
+        
+        # Time-based patterns
+        print("\n  Hourly breakdown (24h format):")
+        active_hours = sorted([h for h in hourly_band.keys() if sum(hourly_band[h].values()) > 0])
+        if active_hours:
+            for hour in active_hours[:8]:  # Show up to 8 hours
+                total_hour = sum(hourly_band[hour].values())
+                pct_5g = hourly_band[hour].get("5GHz", 0) / total_hour * 100 if total_hour else 0
+                pct_24 = hourly_band[hour].get("2.4GHz", 0) / total_hour * 100 if total_hour else 0
+                bar_5g = "█" * int(pct_5g / 10)
+                bar_24 = "░" * int(pct_24 / 10)
+                print(f"    {hour:02d}:00  5G:{bar_5g:<10} 2.4:{bar_24:<10}")
+        
+        print()
+
+
 def main():
     commands = {
         "summary": cmd_summary,
@@ -502,6 +762,8 @@ def main():
         "ap-stats": cmd_ap_stats,
         "roaming": cmd_roaming,
         "visibility": cmd_visibility,
+        "sticky": cmd_sticky,
+        "band-usage": cmd_band_usage,
     }
     
     if len(sys.argv) < 2 or sys.argv[1] not in commands:

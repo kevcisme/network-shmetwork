@@ -46,6 +46,11 @@ export interface HostMetrics {
     txBitrate: string | null;
     rxBitrate: string | null;
     channelBusy: number | null;
+    freqMhz: number | null;
+    band: string | null;
+    channel: number | null;
+    noise: number | null;
+    snr: number | null;
   } | null;
   wan: {
     cfLoss: number;
@@ -193,6 +198,11 @@ export async function getLatestMetrics(): Promise<Record<string, HostMetrics>> {
             txBitrate: (wifiProbe.tx_bitrate as string) || null,
             rxBitrate: (wifiProbe.rx_bitrate as string) || null,
             channelBusy: safeParseInt(wifiProbe.chan_busy_pct),
+            freqMhz: safeParseInt(wifiProbe.freq_mhz),
+            band: (wifiProbe.band as string) || null,
+            channel: safeParseInt(wifiProbe.channel),
+            noise: safeParseInt(wifiProbe.noise_dbm),
+            snr: safeParseInt(wifiProbe.snr_db),
           }
         : null,
       wan: wanProbe
@@ -238,6 +248,11 @@ export interface WifiHistoryPoint {
   apName: string | null;
   signal: number | null;
   channelBusy: number | null;
+  freqMhz: number | null;
+  band: string | null;
+  channel: number | null;
+  noise: number | null;
+  snr: number | null;
 }
 
 export interface WanHistoryPoint {
@@ -294,6 +309,11 @@ export async function getHostHistory(
       apName: (row.ap_name as string) || null,
       signal: safeParseInt(row.signal_dbm),
       channelBusy: safeParseInt(row.chan_busy_pct),
+      freqMhz: safeParseInt(row.freq_mhz),
+      band: (row.band as string) || null,
+      channel: safeParseInt(row.channel),
+      noise: safeParseInt(row.noise_dbm),
+      snr: safeParseInt(row.snr_db),
     })),
     wanProbe: filteredWan.map((row) => ({
       ts: row.ts as string,
@@ -498,5 +518,163 @@ export async function getAnalytics(): Promise<AnalyticsData> {
     hourlyPatterns,
     incidents: incidents.slice(-100), // Last 100 incidents
     recommendations,
+  };
+}
+
+/** Band usage statistics */
+export interface BandUsage {
+  band24: number;
+  band5: number;
+  band6: number;
+  total: number;
+}
+
+/** Mesh health score data */
+export interface MeshHealthScore {
+  overall: number;
+  signalScore: number;
+  backhaulScore: number;
+  roamingScore: number;
+  interferenceScore: number;
+  rating: "Excellent" | "Good" | "Fair" | "Poor" | "Critical";
+  issues: string[];
+}
+
+/** Get band usage statistics for all hosts */
+export async function getBandUsage(): Promise<Record<string, BandUsage>> {
+  const logs = await loadAllLogs();
+  const result: Record<string, BandUsage> = {};
+
+  for (const host of logs.hosts) {
+    const wifiData = logs.wifiProbe[host] || [];
+    const usage: BandUsage = { band24: 0, band5: 0, band6: 0, total: 0 };
+
+    for (const row of wifiData) {
+      let band = row.band as string | undefined;
+      const freq = safeParseInt(row.freq_mhz);
+
+      // Infer band from frequency if not explicitly set
+      if (!band && freq) {
+        if (freq < 3000) band = "2.4GHz";
+        else if (freq < 6000) band = "5GHz";
+        else band = "6GHz";
+      }
+
+      if (band) {
+        usage.total++;
+        if (band === "2.4GHz") usage.band24++;
+        else if (band === "5GHz") usage.band5++;
+        else if (band === "6GHz") usage.band6++;
+      }
+    }
+
+    result[host] = usage;
+  }
+
+  return result;
+}
+
+/** Calculate mesh health score */
+export async function getMeshHealthScore(): Promise<MeshHealthScore> {
+  const logs = await loadAllLogs();
+  const issues: string[] = [];
+
+  let signalScores: number[] = [];
+  let backhaulScores: number[] = [];
+  let bandUsageScores: number[] = [];
+
+  for (const host of logs.hosts) {
+    const wifiData = logs.wifiProbe[host] || [];
+    const iperfData = logs.iperf[host] || [];
+
+    // Signal score (0-100 based on average signal strength)
+    const signals = wifiData
+      .map((r) => safeParseInt(r.signal_dbm))
+      .filter((s): s is number => s !== null);
+
+    if (signals.length > 0) {
+      const avgSignal = signals.reduce((a, b) => a + b, 0) / signals.length;
+      // Map -90 to -40 dBm range to 0-100 score
+      const signalScore = Math.max(0, Math.min(100, ((avgSignal + 90) / 50) * 100));
+      signalScores.push(signalScore);
+
+      if (avgSignal < -75) {
+        issues.push(`${host}: Weak signal (avg ${avgSignal.toFixed(0)} dBm)`);
+      }
+    }
+
+    // Backhaul score (based on iperf throughput)
+    const throughputs = iperfData
+      .filter((r) => r.ok)
+      .map((r) => {
+        const end = (r.iperf as Record<string, unknown>)?.end as Record<string, unknown>;
+        const sumRecv = end?.sum_received as Record<string, unknown>;
+        return (sumRecv?.bits_per_second as number) / 1_000_000; // Mbps
+      })
+      .filter((t): t is number => !isNaN(t) && t > 0);
+
+    if (throughputs.length > 0) {
+      const avgThroughput = throughputs.reduce((a, b) => a + b, 0) / throughputs.length;
+      // Map 0-200 Mbps to 0-100 score (200+ is 100)
+      const backhaulScore = Math.min(100, (avgThroughput / 200) * 100);
+      backhaulScores.push(backhaulScore);
+
+      if (avgThroughput < 50) {
+        issues.push(`${host}: Slow backhaul (avg ${avgThroughput.toFixed(0)} Mbps)`);
+      }
+    }
+
+    // Band usage score (prefer 5GHz over 2.4GHz)
+    const bands = wifiData
+      .map((r) => (r.band as string) || (safeParseInt(r.freq_mhz) && safeParseInt(r.freq_mhz)! < 3000 ? "2.4GHz" : "5GHz"))
+      .filter(Boolean);
+
+    if (bands.length > 0) {
+      const band5Count = bands.filter((b) => b === "5GHz" || b === "6GHz").length;
+      const bandScore = (band5Count / bands.length) * 100;
+      bandUsageScores.push(bandScore);
+
+      if (bandScore < 50) {
+        issues.push(`${host}: Stuck on 2.4GHz ${(100 - bandScore).toFixed(0)}% of time`);
+      }
+    }
+  }
+
+  // Calculate component scores
+  const signalScore = signalScores.length > 0
+    ? signalScores.reduce((a, b) => a + b, 0) / signalScores.length
+    : 50;
+  const backhaulScore = backhaulScores.length > 0
+    ? backhaulScores.reduce((a, b) => a + b, 0) / backhaulScores.length
+    : 50;
+  const roamingScore = bandUsageScores.length > 0
+    ? bandUsageScores.reduce((a, b) => a + b, 0) / bandUsageScores.length
+    : 50;
+  const interferenceScore = 70; // Placeholder - would need interference data
+
+  // Weighted overall score
+  const overall = Math.round(
+    signalScore * 0.35 +
+    backhaulScore * 0.30 +
+    roamingScore * 0.20 +
+    interferenceScore * 0.15
+  );
+
+  // Determine rating
+  let rating: MeshHealthScore["rating"];
+  if (overall >= 85) rating = "Excellent";
+  else if (overall >= 70) rating = "Good";
+  else if (overall >= 50) rating = "Fair";
+  else if (overall >= 30) rating = "Poor";
+  else rating = "Critical";
+
+  return {
+    overall,
+    signalScore: Math.round(signalScore),
+    backhaulScore: Math.round(backhaulScore),
+    roamingScore: Math.round(roamingScore),
+    interferenceScore: Math.round(interferenceScore),
+    rating,
+    issues,
   };
 }
