@@ -1,0 +1,25 @@
+# Logs and data files
+*.log
+*.csv
+*.jsonl
+/var/log/netdiag/
+
+# Local configuration (if any)
+.env
+.env.*
+
+# Node.js
+node_modules/
+dashboard/node_modules/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+
+# Local AP map with real BSSIDs (use ap_map.txt.example as template)
+ap_map.txt

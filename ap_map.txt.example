@@ -1,0 +1,43 @@
+# AP BSSID to Name Mapping
+# Format: BSSID,AP_Name
+# 
+# Deploy this file to /etc/netdiag/ap_map.txt on each probe Pi
+#
+# To find your BSSIDs, run on any connected device:
+#   iw dev wlan0 scan | grep -E "BSS|SSID:"
+#
+# Or check your router's admin interface for MAC addresses.
+#
+# Example entries:
+# aa:bb:cc:dd:ee:01,Living_Room_Primary
+# aa:bb:cc:dd:ee:02,Kitchen
+# aa:bb:cc:dd:ee:03,Bedroom_1
+# aa:bb:cc:dd:ee:04,Bedroom_2
+# aa:bb:cc:dd:ee:05,Basement
+# aa:bb:cc:dd:ee:06,Garage
+# aa:bb:cc:dd:ee:07,Office
+#
+# Note: Many mesh systems have multiple BSSIDs per physical AP
+# (one for 2.4GHz, one for 5GHz). Map both if you want band tracking:
+# aa:bb:cc:dd:ee:01,Living_Room_5G
+# aa:bb:cc:dd:ee:02,Living_Room_2.4G
+
+# === YOUR BSSID MAPPINGS BELOW ===
+# Copy this file to ap_map.txt and replace with your actual BSSIDs
+
+# Primary Router
+# xx:xx:xx:xx:xx:xx,Living_Room_Primary
+
+# Kitchen AP
+# xx:xx:xx:xx:xx:xx,Kitchen
+
+# Bedroom APs
+# xx:xx:xx:xx:xx:xx,Bedroom_1
+# xx:xx:xx:xx:xx:xx,Bedroom_2
+
+# Office AP
+# xx:xx:xx:xx:xx:xx,Office
+
+# Basement/Garage
+# xx:xx:xx:xx:xx:xx,Basement
+# xx:xx:xx:xx:xx:xx,Garage
