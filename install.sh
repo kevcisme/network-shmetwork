@@ -30,9 +30,10 @@ detect_interface() {
   fi
 }
 
-IFACE=$(detect_interface)
+# Use provided IFACE or auto-detect
+IFACE="${IFACE:-$(detect_interface)}"
 IS_WIFI=false
-[[ "$IFACE" == "wlan0" ]] && IS_WIFI=true
+[[ "$IFACE" == wlan* ]] && IS_WIFI=true
 
 echo "Detected interface: $IFACE"
 echo "WiFi mode: $IS_WIFI"
