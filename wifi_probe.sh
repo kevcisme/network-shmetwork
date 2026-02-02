@@ -17,10 +17,10 @@ lookup_ap_name() {
   local normalized
   normalized="$(echo "$bssid" | tr '[:upper:]' '[:lower:]')"
   awk -F',' -v bssid="$normalized" '
-    BEGIN { IGNORECASE=1 }
+    BEGIN { IGNORECASE=1; found=0 }
     !/^#/ && NF>=2 {
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1)
-      if (tolower($1) == bssid) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit }
+      if (tolower($1) == bssid) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; found=1; exit }
     }
     END { if (!found) print "unknown" }
   ' "$AP_MAP"
@@ -47,7 +47,7 @@ fi
 # Basic link info
 LINK="$(iw dev "$IFACE" link 2>/dev/null || true)"
 SSID="$(echo "$LINK" | awk -F': ' '/SSID/ {print $2; exit}')"
-BSSID="$(echo "$LINK" | awk -F': ' '/Connected to/ {print $2; exit}')"
+BSSID="$(echo "$LINK" | awk '/Connected to/ {print $3; exit}')"
 SIGNAL="$(echo "$LINK" | awk -F': ' '/signal/ {print $2; exit}' | awk '{print $1}')"
 TXBR="$(echo "$LINK" | awk -F': ' '/tx bitrate/ {print $2; exit}')"
 RXBR="$(echo "$LINK" | awk -F': ' '/rx bitrate/ {print $2; exit}')"
