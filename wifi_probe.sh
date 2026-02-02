@@ -53,11 +53,11 @@ TXBR="$(echo "$LINK" | awk -F': ' '/tx bitrate/ {print $2; exit}')"
 RXBR="$(echo "$LINK" | awk -F': ' '/rx bitrate/ {print $2; exit}')"
 
 # Frequency and channel info from iw dev info
+# Format: "channel 149 (5745 MHz), width: 80 MHz, center1: 5775 MHz"
 DEV_INFO="$(iw dev "$IFACE" info 2>/dev/null || true)"
-FREQ="$(echo "$DEV_INFO" | awk '/channel/ {print $2; exit}' | grep -oE '[0-9]+')"
-# Get frequency in MHz from the channel line (format: "channel X (YYYY MHz)")
-FREQ_MHZ="$(echo "$DEV_INFO" | awk '/channel/ {gsub(/[()]/, ""); for(i=1;i<=NF;i++) if($i ~ /^[0-9]+$/ && $i > 100) print $i; exit}')"
 CHANNEL="$(echo "$DEV_INFO" | awk '/channel/ {print $2; exit}')"
+# Extract frequency: get the number inside parentheses before "MHz"
+FREQ_MHZ="$(echo "$DEV_INFO" | sed -n 's/.*channel [0-9]* (\([0-9]*\) MHz.*/\1/p' | head -1)"
 BAND="$(get_band "${FREQ_MHZ:-}")"
 
 # Station counters (retries, drops)
