@@ -1,3 +1,5 @@
+.claude/
+
 # Logs and data files
 *.log
 *.csv
