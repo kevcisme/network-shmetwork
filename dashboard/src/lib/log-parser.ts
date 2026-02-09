@@ -271,6 +271,17 @@ export interface HostHistory {
   wanProbe: WanHistoryPoint[];
 }
 
+/** Parse a timestamp string, handling formats with or without colon in tz offset */
+function parseTimestamp(ts: unknown): Date {
+  if (!ts) return new Date(NaN);
+  const str = String(ts);
+  const d = new Date(str);
+  if (!isNaN(d.getTime())) return d;
+  // Handle timezone offset without colon (e.g. +0000 or -1000 from some date implementations)
+  const fixed = str.replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+  return new Date(fixed);
+}
+
 /** Get history for a specific host (last N minutes of data) */
 export async function getHostHistory(
   host: string,
@@ -287,11 +298,26 @@ export async function getHostHistory(
   // Filter to requested time range
   const cutoff = new Date(Date.now() - minutes * 60 * 1000);
   const filterByTime = <T extends { ts?: unknown }>(rows: T[]) =>
-    rows.filter((r) => new Date(r.ts as string) >= cutoff);
+    rows.filter((r) => {
+      const d = parseTimestamp(r.ts);
+      return !isNaN(d.getTime()) && d >= cutoff;
+    });
 
-  const filteredNet = filterByTime(netProbe);
-  const filteredWifi = filterByTime(wifiProbe);
-  const filteredWan = filterByTime(wanProbe);
+  let filteredNet = filterByTime(netProbe);
+  let filteredWifi = filterByTime(wifiProbe);
+  let filteredWan = filterByTime(wanProbe);
+
+  // If time filtering removed all data but raw data exists, fall back to
+  // showing available data - this handles stale synced data or clock skew
+  if (filteredNet.length === 0 && netProbe.length > 0) {
+    filteredNet = netProbe;
+  }
+  if (filteredWifi.length === 0 && wifiProbe.length > 0) {
+    filteredWifi = wifiProbe;
+  }
+  if (filteredWan.length === 0 && wanProbe.length > 0) {
+    filteredWan = wanProbe;
+  }
 
   return {
     host,
